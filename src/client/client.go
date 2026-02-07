@@ -3064,3 +3064,26 @@ func (s *SignalClient) ClosePoll(number string, recipient string, pollTimestamp 
 		return nil
 	}
 }
+
+// SendRawJSONRPC sends a raw JSON-RPC request through the daemon and returns the raw response.
+// This is used for /api/v1/rpc passthrough compatibility with signal-cli daemon --http.
+// Only works in JsonRpc mode.
+func (s *SignalClient) SendRawJSONRPC(request json.RawMessage) (json.RawMessage, error) {
+	if s.signalCliMode != JsonRpc {
+		return nil, errors.New("JSON-RPC passthrough is only available in json-rpc mode")
+	}
+	jsonRpc2Client, err := s.getJsonRpc2Client()
+	if err != nil {
+		return nil, err
+	}
+	return jsonRpc2Client.SendRawJSONRPC(request)
+}
+
+// IsJsonRpcHealthy checks if the JSON-RPC connection is healthy.
+func (s *SignalClient) IsJsonRpcHealthy() bool {
+	if s.signalCliMode != JsonRpc {
+		return false
+	}
+	_, err := s.getJsonRpc2Client()
+	return err == nil
+}

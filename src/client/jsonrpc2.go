@@ -273,3 +273,83 @@ func (r *JsonRpc2Client) RemoveReceiveChannel(channelUuid string) {
 	delete(r.receivedMessagesChannels, channelUuid)
 	r.receivedMessagesMutex.Unlock()
 }
+
+// SendRawJSONRPC sends a raw JSON-RPC request and returns the raw JSON response.
+// This preserves the original request ID for passthrough compatibility with signal-cli daemon --http.
+func (r *JsonRpc2Client) SendRawJSONRPC(request json.RawMessage) (json.RawMessage, error) {
+	// Parse the request to extract the ID
+	var req struct {
+		Id     interface{} `json:"id"`
+		Method string      `json:"method"`
+	}
+	if err := json.Unmarshal(request, &req); err != nil {
+		return nil, errors.New("invalid JSON-RPC request: " + err.Error())
+	}
+
+	// If no ID (notification), just send and return nil
+	if req.Id == nil {
+		_, err := r.conn.Write(append(request, '\n'))
+		return nil, err
+	}
+
+	// Convert ID to string for channel map
+	idStr := ""
+	switch v := req.Id.(type) {
+	case string:
+		idStr = v
+	case float64:
+		idStr = strconv.FormatFloat(v, 'f', -1, 64)
+	default:
+		idBytes, _ := json.Marshal(v)
+		idStr = string(idBytes)
+	}
+
+	log.Debug("json-rpc raw passthrough command: ", string(request))
+
+	// Register response channel
+	responseChan := make(chan JsonRpc2MessageResponse)
+	r.receivedResponsesMutex.Lock()
+	r.receivedResponsesById[idStr] = responseChan
+	r.receivedResponsesMutex.Unlock()
+
+	// Send the request
+	_, err := r.conn.Write(append(request, '\n'))
+	if err != nil {
+		r.receivedResponsesMutex.Lock()
+		delete(r.receivedResponsesById, idStr)
+		r.receivedResponsesMutex.Unlock()
+		return nil, err
+	}
+
+	// Wait for response with timeout
+	select {
+	case resp := <-responseChan:
+		r.receivedResponsesMutex.Lock()
+		delete(r.receivedResponsesById, idStr)
+		r.receivedResponsesMutex.Unlock()
+
+		// Reconstruct the raw JSON-RPC response
+		type RawResponse struct {
+			JsonRpc string          `json:"jsonrpc"`
+			Result  json.RawMessage `json:"result,omitempty"`
+			Error   *Error          `json:"error,omitempty"`
+			Id      interface{}     `json:"id"`
+		}
+		rawResp := RawResponse{
+			JsonRpc: "2.0",
+			Result:  resp.Result,
+			Id:      req.Id,
+		}
+		if resp.Err.Code != 0 {
+			rawResp.Error = &resp.Err
+			rawResp.Result = nil
+		}
+		return json.Marshal(rawResp)
+
+	case <-time.After(60 * time.Second):
+		r.receivedResponsesMutex.Lock()
+		delete(r.receivedResponsesById, idStr)
+		r.receivedResponsesMutex.Unlock()
+		return nil, errors.New("timeout waiting for JSON-RPC response")
+	}
+}

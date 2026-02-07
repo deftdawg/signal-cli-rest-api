@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -2786,4 +2787,189 @@ func (a *Api) ClosePoll(c *gin.Context) {
 	}
 
 	c.Status(204)
+}
+
+// JsonRpcPassthrough handles POST /api/v1/rpc for signal-cli daemon --http compatibility.
+// This endpoint passes through JSON-RPC requests to the signal-cli daemon.
+// @Summary JSON-RPC passthrough endpoint for signal-cli daemon HTTP compatibility
+// @Tags JSON-RPC
+// @Description Passes through JSON-RPC 2.0 requests to the signal-cli daemon. Only available in json-rpc mode.
+// @Accept json
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Success 201
+// @Failure 400 {object} Error
+// @Failure 409 {object} Error
+// @Router /api/v1/rpc [post]
+func (a *Api) JsonRpcPassthrough(c *gin.Context) {
+	if a.signalClient.GetSignalCliMode() != client.JsonRpc {
+		c.JSON(409, Error{Msg: "This endpoint requires MODE=json-rpc. Current mode does not support JSON-RPC passthrough."})
+		return
+	}
+
+	body, err := c.GetRawData()
+	if err != nil {
+		c.JSON(400, Error{Msg: "Failed to read request body: " + err.Error()})
+		return
+	}
+
+	// Check if this is a batch request (array) or single request (object)
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		c.JSON(400, Error{Msg: "Empty request body"})
+		return
+	}
+
+	if trimmed[0] == '[' {
+		// Batch request
+		var requests []json.RawMessage
+		if err := json.Unmarshal(trimmed, &requests); err != nil {
+			c.JSON(400, Error{Msg: "Invalid JSON batch request: " + err.Error()})
+			return
+		}
+
+		var responses []json.RawMessage
+		for _, req := range requests {
+			resp, err := a.signalClient.SendRawJSONRPC(req)
+			if err != nil {
+				log.Error("JSON-RPC batch request failed: ", err.Error())
+				// Continue processing other requests
+				continue
+			}
+			if resp != nil {
+				responses = append(responses, resp)
+			}
+		}
+
+		if len(responses) == 0 {
+			c.Status(201)
+			return
+		}
+		// Build batch response JSON array
+		var result bytes.Buffer
+		result.WriteByte('[')
+		for i, resp := range responses {
+			if i > 0 {
+				result.WriteByte(',')
+			}
+			result.Write(resp)
+		}
+		result.WriteByte(']')
+		c.Data(200, "application/json", result.Bytes())
+	} else {
+		// Single request
+		resp, err := a.signalClient.SendRawJSONRPC(trimmed)
+		if err != nil {
+			c.JSON(400, Error{Msg: err.Error()})
+			return
+		}
+		if resp == nil {
+			// Notification (no id), return 201
+			c.Status(201)
+			return
+		}
+		c.Data(200, "application/json", resp)
+	}
+}
+
+// JsonRpcCheck handles GET /api/v1/check for signal-cli daemon --http compatibility.
+// @Summary Health check endpoint for signal-cli daemon HTTP compatibility
+// @Tags JSON-RPC
+// @Description Returns 200 OK if the daemon is running in json-rpc mode and healthy.
+// @Produce plain
+// @Success 200 {string} string "OK"
+// @Failure 503 {object} Error
+// @Router /api/v1/check [get]
+func (a *Api) JsonRpcCheck(c *gin.Context) {
+	if a.signalClient.GetSignalCliMode() != client.JsonRpc {
+		c.JSON(503, Error{Msg: "This endpoint requires MODE=json-rpc. Current mode does not support JSON-RPC."})
+		return
+	}
+
+	if !a.signalClient.IsJsonRpcHealthy() {
+		c.JSON(503, Error{Msg: "JSON-RPC daemon connection is not healthy"})
+		return
+	}
+
+	c.String(200, "OK")
+}
+
+// JsonRpcEvents handles GET /api/v1/events for signal-cli daemon --http SSE compatibility.
+// @Summary Server-Sent Events stream for incoming messages (signal-cli daemon HTTP compatibility)
+// @Tags JSON-RPC
+// @Description Returns a Server-Sent Events stream of incoming Signal messages. Only available in json-rpc mode.
+// @Produce text/event-stream
+// @Param account query string false "Filter events for a specific account"
+// @Success 200 {string} string "SSE stream"
+// @Failure 409 {object} Error
+// @Router /api/v1/events [get]
+func (a *Api) JsonRpcEvents(c *gin.Context) {
+	if a.signalClient.GetSignalCliMode() != client.JsonRpc {
+		c.JSON(409, Error{Msg: "This endpoint requires MODE=json-rpc. Current mode does not support JSON-RPC events."})
+		return
+	}
+
+	accountFilter := c.Query("account")
+
+	// Get receive channel
+	msgChan, channelUuid, err := a.signalClient.GetReceiveChannel()
+	if err != nil {
+		c.JSON(500, Error{Msg: "Failed to create receive channel: " + err.Error()})
+		return
+	}
+	defer a.signalClient.RemoveReceiveChannel(channelUuid)
+
+	// Set SSE headers
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+
+	// Create ping ticker for keepalive
+	pingTicker := time.NewTicker(30 * time.Second)
+	defer pingTicker.Stop()
+
+	clientGone := c.Request.Context().Done()
+	c.Stream(func(w io.Writer) bool {
+		select {
+		case <-clientGone:
+			return false
+		case <-pingTicker.C:
+			// Send keepalive comment
+			c.SSEvent("", ": ping")
+			return true
+		case msg := <-msgChan:
+			// Filter by account if specified
+			if accountFilter != "" {
+				var params struct {
+					Account string `json:"account"`
+				}
+				if err := json.Unmarshal(msg.Params, &params); err == nil {
+					if params.Account != "" && params.Account != accountFilter {
+						return true // Skip this message
+					}
+				}
+			}
+
+			// Format as JSON-RPC notification
+			type JsonRpcNotification struct {
+				JsonRpc string          `json:"jsonrpc"`
+				Method  string          `json:"method"`
+				Params  json.RawMessage `json:"params"`
+			}
+			notification := JsonRpcNotification{
+				JsonRpc: "2.0",
+				Method:  msg.Method,
+				Params:  msg.Params,
+			}
+			data, err := json.Marshal(notification)
+			if err != nil {
+				log.Error("Failed to marshal SSE notification: ", err.Error())
+				return true
+			}
+
+			c.SSEvent("receive", string(data))
+			return true
+		}
+	})
 }

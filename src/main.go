@@ -368,6 +368,15 @@ func main() {
 		}
 	}
 
+	// signal-cli daemon --http compatibility endpoints (only in json-rpc mode)
+	// These endpoints provide API compatibility with signal-cli's native HTTP daemon
+	apiV1 := router.Group("/api/v1")
+	{
+		apiV1.POST("/rpc", api.JsonRpcPassthrough)
+		apiV1.GET("/events", api.JsonRpcEvents)
+		apiV1.GET("/check", api.JsonRpcCheck)
+	}
+
 	protocol := "http"
 	if utils.GetEnv("SWAGGER_USE_HTTPS_AS_PREFERRED_SCHEME", "false") == "true" {
 		protocol = "https"
