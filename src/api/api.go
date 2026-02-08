@@ -2789,11 +2789,11 @@ func (a *Api) ClosePoll(c *gin.Context) {
 	c.Status(204)
 }
 
-// JsonRpcPassthrough handles POST /api/v1/rpc for signal-cli daemon --http compatibility.
+// JsonRpcPassthrough handles POST /api/v1/rpc and /v1/rpc for signal-cli daemon --http compatibility.
 // This endpoint passes through JSON-RPC requests to the signal-cli daemon.
 // @Summary JSON-RPC passthrough endpoint for signal-cli daemon HTTP compatibility
 // @Tags JSON-RPC
-// @Description Passes through JSON-RPC 2.0 requests to the signal-cli daemon. Only available in json-rpc mode.
+// @Description Passes through JSON-RPC 2.0 requests to the signal-cli daemon. Only available in json-rpc mode. Available at both /api/v1/rpc and /v1/rpc.
 // @Accept json
 // @Produce json
 // @Success 200 {object} map[string]interface{}
@@ -2801,6 +2801,7 @@ func (a *Api) ClosePoll(c *gin.Context) {
 // @Failure 400 {object} Error
 // @Failure 409 {object} Error
 // @Router /api/v1/rpc [post]
+// @Router /v1/rpc [post]
 func (a *Api) JsonRpcPassthrough(c *gin.Context) {
 	if a.signalClient.GetSignalCliMode() != client.JsonRpc {
 		c.JSON(409, Error{Msg: "This endpoint requires MODE=json-rpc. Current mode does not support JSON-RPC passthrough."})
@@ -2872,14 +2873,15 @@ func (a *Api) JsonRpcPassthrough(c *gin.Context) {
 	}
 }
 
-// JsonRpcCheck handles GET /api/v1/check for signal-cli daemon --http compatibility.
+// JsonRpcCheck handles GET /api/v1/check and /v1/check for signal-cli daemon --http compatibility.
 // @Summary Health check endpoint for signal-cli daemon HTTP compatibility
 // @Tags JSON-RPC
-// @Description Returns 200 OK if the daemon is running in json-rpc mode and healthy.
+// @Description Returns 200 OK if the daemon is running in json-rpc mode and healthy. Available at both /api/v1/check and /v1/check.
 // @Produce plain
 // @Success 200 {string} string "OK"
 // @Failure 503 {object} Error
 // @Router /api/v1/check [get]
+// @Router /v1/check [get]
 func (a *Api) JsonRpcCheck(c *gin.Context) {
 	if a.signalClient.GetSignalCliMode() != client.JsonRpc {
 		c.JSON(503, Error{Msg: "This endpoint requires MODE=json-rpc. Current mode does not support JSON-RPC."})
@@ -2894,15 +2896,16 @@ func (a *Api) JsonRpcCheck(c *gin.Context) {
 	c.String(200, "OK")
 }
 
-// JsonRpcEvents handles GET /api/v1/events for signal-cli daemon --http SSE compatibility.
+// JsonRpcEvents handles GET /api/v1/events and /v1/events for signal-cli daemon --http SSE compatibility.
 // @Summary Server-Sent Events stream for incoming messages (signal-cli daemon HTTP compatibility)
 // @Tags JSON-RPC
-// @Description Returns a Server-Sent Events stream of incoming Signal messages. Only available in json-rpc mode.
+// @Description Returns a Server-Sent Events stream of incoming Signal messages. Only available in json-rpc mode. Available at both /api/v1/events and /v1/events.
 // @Produce text/event-stream
 // @Param account query string false "Filter events for a specific account"
 // @Success 200 {string} string "SSE stream"
 // @Failure 409 {object} Error
 // @Router /api/v1/events [get]
+// @Router /v1/events [get]
 func (a *Api) JsonRpcEvents(c *gin.Context) {
 	if a.signalClient.GetSignalCliMode() != client.JsonRpc {
 		c.JSON(409, Error{Msg: "This endpoint requires MODE=json-rpc. Current mode does not support JSON-RPC events."})

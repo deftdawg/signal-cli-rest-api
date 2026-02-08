@@ -370,11 +370,18 @@ func main() {
 
 	// signal-cli daemon --http compatibility endpoints (only in json-rpc mode)
 	// These endpoints provide API compatibility with signal-cli's native HTTP daemon
+	// Available under both /api/v1 and /v1 for maximum compatibility
 	apiV1 := router.Group("/api/v1")
 	{
 		apiV1.POST("/rpc", api.JsonRpcPassthrough)
 		apiV1.GET("/events", api.JsonRpcEvents)
 		apiV1.GET("/check", api.JsonRpcCheck)
+	}
+	v1Compat := router.Group("/v1")
+	{
+		v1Compat.POST("/rpc", api.JsonRpcPassthrough)
+		v1Compat.GET("/events", api.JsonRpcEvents)
+		v1Compat.GET("/check", api.JsonRpcCheck)
 	}
 
 	protocol := "http"
